@@ -1,0 +1,275 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SmartDisplay 36x24 Sprite Header Generator</title>
+<style>
+  body { font-family: Arial, sans-serif; }
+  .row { margin: 10px 0; }
+  canvas { border: 1px solid #999; image-rendering: pixelated; }
+  label { margin-right: 12px; }
+  input[type=range] { width: 260px; vertical-align: middle; }
+  .small { color:#555; font-size: 0.9em; }
+</style>
+</head>
+
+<body>
+<h2>SmartDisplay 36×24 Sprite → .h (PROGMEM)</h2>
+
+<div class="row">
+  <input type="file" accept="image/*" id="fileInput">
+</div>
+
+<div class="row">
+  <label>Threshold: <span id="thVal">128</span></label>
+  <input type="range" id="threshold" min="0" max="255" value="128">
+  <label><input type="checkbox" id="invert"> Invert</label>
+  <label><input type="checkbox" id="fit" checked> Fit (preserve aspect)</label>
+</div>
+
+<div class="row small">
+  Output format: <b>1-bit packed</b>, 24 rows × 5 bytes per row (36 bits used; last byte uses top 4 bits).
+  Includes an inline <code>draw(lcd, x, y)</code> helper.
+</div>
+
+<div class="row">
+  <canvas id="srcCanvas" width="180" height="120"></canvas>
+  <canvas id="dstCanvas" width="360" height="240"></canvas>
+</div>
+
+<div class="row">
+  <button id="downloadBtn" disabled>Download .h</button>
+</div>
+
+<script>
+const W = 36, H = 24;
+
+const fileInput = document.getElementById('fileInput');
+const thresholdSlider = document.getElementById('threshold');
+const thVal = document.getElementById('thVal');
+const invertChk = document.getElementById('invert');
+const fitChk = document.getElementById('fit');
+const downloadBtn = document.getElementById('downloadBtn');
+
+const srcCanvas = document.getElementById('srcCanvas');
+const srcCtx = srcCanvas.getContext('2d', { willReadFrequently: true });
+
+const dstCanvas = document.getElementById('dstCanvas');
+const dstCtx = dstCanvas.getContext('2d', { willReadFrequently: true });
+
+// Scale preview canvas
+dstCtx.imageSmoothingEnabled = false;
+
+let currentImage = null;
+let lastName = "sprite";
+
+function sanitizeName(name) {
+  // valid C++ identifier-ish
+  name = name.replace(/\.[^/.]+$/, "");
+  name = name.replace(/[^a-zA-Z0-9_]/g, "_");
+  if (!/^[a-zA-Z_]/.test(name)) name = "_" + name;
+  return name || "sprite";
+}
+
+function drawToCanvases() {
+  if (!currentImage) return;
+
+  // Draw source preview
+  srcCanvas.width = currentImage.width;
+  srcCanvas.height = currentImage.height;
+  srcCtx.drawImage(currentImage, 0, 0);
+
+  // Render into 36x24 offscreen then scale for preview
+  const off = document.createElement('canvas');
+  off.width = W; off.height = H;
+  const offCtx = off.getContext('2d', { willReadFrequently: true });
+  offCtx.imageSmoothingEnabled = true;
+
+  // Fit or stretch
+  if (fitChk.checked) {
+    const sx = currentImage.width;
+    const sy = currentImage.height;
+    const scale = Math.min(W / sx, H / sy);
+    const dw = Math.round(sx * scale);
+    const dh = Math.round(sy * scale);
+    const dx = Math.floor((W - dw) / 2);
+    const dy = Math.floor((H - dh) / 2);
+
+    // Clear background to white (you can invert later)
+    offCtx.fillStyle = "#FFFFFF";
+    offCtx.fillRect(0, 0, W, H);
+    offCtx.drawImage(currentImage, 0, 0, sx, sy, dx, dy, dw, dh);
+  } else {
+    offCtx.drawImage(currentImage, 0, 0, currentImage.width, currentImage.height, 0, 0, W, H);
+  }
+
+  // Convert to 1-bit and preview scaled up
+  const th = parseInt(thresholdSlider.value, 10);
+  const inv = invertChk.checked;
+
+  const imgData = offCtx.getImageData(0, 0, W, H);
+  const p = imgData.data;
+
+  // Create a big preview image by painting pixels
+  dstCtx.clearRect(0, 0, dstCanvas.width, dstCanvas.height);
+
+  // Pixel size in preview
+  const px = 10; // 36*10=360, 24*10=240
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      const r = p[i], g = p[i+1], b = p[i+2];
+      // Luma
+      let lum = Math.round(r * 0.2126 + g * 0.7152 + b * 0.0722);
+      let on = lum < th; // black-ish = ON
+      if (inv) on = !on;
+
+      dstCtx.fillStyle = on ? "#000000" : "#FFFFFF";
+      dstCtx.fillRect(x * px, y * px, px, px);
+    }
+  }
+
+  downloadBtn.disabled = false;
+}
+
+function packBitsToHeader(name) {
+  const th = parseInt(thresholdSlider.value, 10);
+  const inv = invertChk.checked;
+
+  // Re-render into exact 36x24 (same as preview pipeline)
+  const off = document.createElement('canvas');
+  off.width = W; off.height = H;
+  const offCtx = off.getContext('2d', { willReadFrequently: true });
+  offCtx.imageSmoothingEnabled = true;
+
+  if (fitChk.checked) {
+    const sx = currentImage.width;
+    const sy = currentImage.height;
+    const scale = Math.min(W / sx, H / sy);
+    const dw = Math.round(sx * scale);
+    const dh = Math.round(sy * scale);
+    const dx = Math.floor((W - dw) / 2);
+    const dy = Math.floor((H - dh) / 2);
+    offCtx.fillStyle = "#FFFFFF";
+    offCtx.fillRect(0, 0, W, H);
+    offCtx.drawImage(currentImage, 0, 0, sx, sy, dx, dy, dw, dh);
+  } else {
+    offCtx.drawImage(currentImage, 0, 0, currentImage.width, currentImage.height, 0, 0, W, H);
+  }
+
+  const imgData = offCtx.getImageData(0, 0, W, H);
+  const p = imgData.data;
+
+  // Pack bits: 24 rows × 5 bytes
+  // Convention:
+  // - Byte 0: x=0..7 in bits 7..0
+  // - Byte 1: x=8..15 in bits 7..0
+  // - Byte 2: x=16..23
+  // - Byte 3: x=24..31
+  // - Byte 4: x=32..35 in bits 7..4 (bits 3..0 unused = 0)
+  const rows = [];
+  for (let y = 0; y < H; y++) {
+    const b = [0,0,0,0,0];
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      const r = p[i], g = p[i+1], bl = p[i+2];
+      let lum = Math.round(r * 0.2126 + g * 0.7152 + bl * 0.0722);
+      let on = lum < th;
+      if (inv) on = !on;
+
+      if (on) {
+        const bi = (x >> 3);           // 0..4
+        const bit = 7 - (x & 7);       // MSB first
+        // Only x=32..35 used in last byte; lower nibble remains 0 automatically
+        b[bi] |= (1 << bit);
+      }
+    }
+    rows.push(b);
+  }
+
+  // Generate header
+  const ns = sanitizeName(name);
+  let out = "";
+  out += "#pragma once\n";
+  out += "#include <Arduino.h>\n\n";
+  out += "namespace " + ns + " {\n";
+  out += "  static constexpr uint8_t W = 36;\n";
+  out += "  static constexpr uint8_t H = 24;\n\n";
+  out += "  // 1-bit packed: 24 rows × 5 bytes (36 pixels wide)\n";
+  out += "  // Bit convention: byte0 bit7 = x0, ... byte4 bit4 = x35\n";
+  out += "  static const uint8_t data[H][5] PROGMEM = {\n";
+
+  for (let y = 0; y < H; y++) {
+    const b = rows[y];
+    out += "    {";
+    for (let k = 0; k < 5; k++) {
+      out += "0x" + b[k].toString(16).padStart(2,'0').toUpperCase();
+      if (k < 4) out += ", ";
+    }
+    out += "}";
+    out += (y < H-1) ? ",\n" : "\n";
+  }
+  out += "  };\n\n";
+
+  out += "  // Draw helper: uses lcd.setPixel(), so it works with your current driver mapping.\n";
+  out += "  // x,y = top-left destination. threshold/invert already baked into data.\n";
+  out += "  template<typename LCD>\n";
+  out += "  inline void draw(LCD &lcd, int x0 = 0, int y0 = 0, bool on = true) {\n";
+  out += "    for (uint8_t y = 0; y < H; y++) {\n";
+  out += "      for (uint8_t x = 0; x < W; x++) {\n";
+  out += "        uint8_t byteIndex = x >> 3;\n";
+  out += "        uint8_t bit = 7 - (x & 7);\n";
+  out += "        uint8_t v = pgm_read_byte(&data[y][byteIndex]);\n";
+  out += "        if (v & (1 << bit)) {\n";
+  out += "          lcd.setPixel((uint8_t)(x0 + x), (uint8_t)(y0 + y), on);\n";
+  out += "        }\n";
+  out += "      }\n";
+  out += "    }\n";
+  out += "  }\n";
+  out += "}\n";
+
+  return { ns, text: out };
+}
+
+fileInput.addEventListener('change', (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  lastName = sanitizeName(file.name);
+  const reader = new FileReader();
+  reader.onload = () => {
+    const img = new Image();
+    img.onload = () => {
+      currentImage = img;
+      drawToCanvases();
+    };
+    img.src = reader.result;
+  };
+  reader.readAsDataURL(file);
+});
+
+thresholdSlider.addEventListener('input', () => {
+  thVal.textContent = thresholdSlider.value;
+  drawToCanvases();
+});
+
+invertChk.addEventListener('change', drawToCanvases);
+fitChk.addEventListener('change', drawToCanvases);
+
+downloadBtn.addEventListener('click', () => {
+  if (!currentImage) return;
+  const res = packBitsToHeader(lastName);
+  const blob = new Blob([res.text], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = res.ns + ".h";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
+</script>
+</body>
+</html>
