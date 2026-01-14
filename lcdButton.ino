@@ -1,8 +1,8 @@
 //Test Script
 
 #include <SPI.h>
-#include "src/NKKSmartDisplayLCD/NKKSmartDisplayLCD.h"
-#include "src/gfx/test.h"
+#include "NKKSmartDisplayLCD.h"
+#include "gfx/test.h"
 
 //Backlight pins
 #define RED_PIN   4
@@ -53,3 +53,4 @@ void loop()
 
   delay(1500);
 }
+
